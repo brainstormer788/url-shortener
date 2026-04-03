@@ -13,6 +13,7 @@ const User = require('./models/User');
 const auth = require('./middleware/auth');
 
 const app = express();
+app.set('trust proxy', 1);
 app.use(express.json());
 
 const PORT = process.env.PORT || 5000;
@@ -44,16 +45,26 @@ if (!JWT_SECRET) {
   throw new Error('JWT_SECRET is required. Add it to backend/.env before starting the server.');
 }
 
+function normalizeOrigin(value) {
+  return value.trim().replace(/\/+$/, '');
+}
+
 const allowedOrigins = (process.env.CORS_ORIGIN || '')
   .split(',')
-  .map((value) => value.trim())
+  .map((value) => normalizeOrigin(value))
   .filter(Boolean);
 
 const corsOrigins = allowedOrigins.length > 0 ? allowedOrigins : DEFAULT_ALLOWED_ORIGINS;
 
 app.use(cors({
   origin(origin, callback) {
-    if (!origin || corsOrigins.includes(origin)) {
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    const normalizedOrigin = normalizeOrigin(origin);
+
+    if (corsOrigins.includes(normalizedOrigin)) {
       return callback(null, true);
     }
 
@@ -61,6 +72,14 @@ app.use(cors({
   },
   credentials: true
 }));
+
+app.use((error, req, res, next) => {
+  if (error && error.message === 'Origin not allowed by CORS') {
+    return res.status(403).json({ error: 'Origin not allowed by CORS' });
+  }
+
+  return next(error);
+});
 
 mongoose
   .connect(MONGODB_URI, { serverSelectionTimeoutMS: MONGODB_TIMEOUT_MS })
@@ -136,7 +155,7 @@ function createAuthToken(userId) {
 function setAuthCookie(res, token) {
   res.cookie(TOKEN_COOKIE_NAME, token, {
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite: NODE_ENV === 'production' ? 'none' : 'lax',
     secure: NODE_ENV === 'production',
     maxAge: TOKEN_LIFETIME_MS
   });
@@ -145,7 +164,7 @@ function setAuthCookie(res, token) {
 function clearAuthCookie(res) {
   res.clearCookie(TOKEN_COOKIE_NAME, {
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite: NODE_ENV === 'production' ? 'none' : 'lax',
     secure: NODE_ENV === 'production'
   });
 }
@@ -221,7 +240,10 @@ app.post('/api/auth/register', authRateLimiter, requireDatabase, async (req, res
 
     const token = createAuthToken(user.id);
     setAuthCookie(res, token);
-    res.json({ token });
+    res.json({
+      authenticated: true,
+      user: { id: user.id, email: user.email }
+    });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
   }
@@ -237,7 +259,10 @@ app.post('/api/auth/login', authRateLimiter, requireDatabase, async (req, res) =
 
     const token = createAuthToken(user.id);
     setAuthCookie(res, token);
-    res.json({ token });
+    res.json({
+      authenticated: true,
+      user: { id: user.id, email: user.email }
+    });
   } catch (error) {
     res.status(500).json({ error: 'Server error' });
   }
